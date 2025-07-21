@@ -28,7 +28,7 @@ public class AttackState : State
 
         if (aiController.playerTarget == null)
         {
-            Debug.Log($"[{aiController.enemyType}] Lost target, switching to IdleState");
+            Debug.Log($"[{aiController.enemyType}] AttackState: Lost target, switching to IdleState");
             stateMachine.ChangeState(aiController.idleState);
             return;
         }
@@ -40,7 +40,7 @@ public class AttackState : State
         // Nếu player ra khỏi vùng chaseRange → Patrol/Idle
         if (distanceToPlayer > chaseRange)
         {
-            Debug.Log($"[{aiController.enemyType}] Player out of chase range ({distanceToPlayer:F2}m > {chaseRange:F2}m), switching to PatrolState");
+            Debug.Log($"[{aiController.enemyType}] AttackState: Player out of chase range ({distanceToPlayer:F2}m > {chaseRange:F2}m), switching to PatrolState");
             stateMachine.ChangeState(aiController.patrolState);
             return;
         }
@@ -48,7 +48,7 @@ public class AttackState : State
         // Nếu player ra khỏi vùng attack nhưng vẫn trong vùng chaseRange → Chase
         if (attackController != null && distanceToPlayer > attackRange)
         {
-            Debug.Log($"[{aiController.enemyType}] Player out of attack range ({distanceToPlayer:F2}m > {attackRange:F2}m), switching to ChaseState");
+            Debug.Log($"[{aiController.enemyType}] AttackState: Player out of attack range ({distanceToPlayer:F2}m > {attackRange:F2}m), switching to ChaseState");
             stateMachine.ChangeState(aiController.chaseState);
             return;
         }
@@ -56,7 +56,7 @@ public class AttackState : State
         // Nếu vẫn trong vùng attack → tấn công
         if (attackController != null && distanceToPlayer <= attackRange)
         {
-            Debug.Log($"[{aiController.enemyType}] Player in attack range ({distanceToPlayer:F2}m <= {attackRange:F2}m), attempting attack.");
+            Debug.Log($"[{aiController.enemyType}] AttackState: Player in attack range ({distanceToPlayer:F2}m <= {attackRange:F2}m), attempting attack.");
             attackController.Attack(aiController.playerTarget);
         }
     }

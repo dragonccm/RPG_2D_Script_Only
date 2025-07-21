@@ -18,15 +18,21 @@ public class Enemy : MonoBehaviour
     [Tooltip("Phạm vi truy đuổi của kẻ địch. Kẻ địch sẽ tiếp tục đuổi theo mục tiêu trong phạm vi này ngay cả khi mục tiêu đã ra khỏi detectionRange.")]
     public float chaseRange = 20f;
     [Tooltip("Layer của Player để kẻ địch có thể phát hiện.")]
-    public LayerMask playerLayerMask = 1 << 6; // Layer của Player
+    public LayerMask playerLayerMask = 1 << 7; // Layer của Player
 
-    [SerializeField] protected Transform target; // Mục tiêu hiện tại của kẻ địch (được xác định bởi Enemy.UpdateTarget)
+    [SerializeField] protected Transform target; // Mục tiêu hiện tại của kẻ địch
     [SerializeField] protected NavMeshAgent agent; // NavMeshAgent để điều khiển di chuyển
 
     // Cache để tối ưu performance
     protected static readonly List<Transform> tempPlayerList = new List<Transform>();
+    protected static readonly List<GameObject> tempPlayerObjects = new List<GameObject>();
     private float nextTargetUpdateTime = 0f;
-    private const float TARGET_UPDATE_INTERVAL = 0.2f; // Cập nhật mục tiêu mỗi 0.2s thay vì mỗi frame
+    private const float TARGET_UPDATE_INTERVAL = 0.2f; // Cập nhật mục tiêu mỗi 0.2s
+
+    // Cache player reference để tối ưu hiệu suất
+    private static Transform[] cachedPlayers;
+    private static float lastPlayerCacheTime = 0f;
+    private const float PLAYER_CACHE_DURATION = 1f; // Cache player trong 1 giây
 
     // --- Event & Property cho hệ thống combat, buff, elite, v.v. ---
     public event Action<float, float> OnHealthChanged;
@@ -45,8 +51,8 @@ public class Enemy : MonoBehaviour
     private bool _invulnerable = false;
     public int phaseCount { get; set; } = 1;
 
-    private float bossRange = 15f; // Giá trị ví dụ, điều chỉnh theo nhu cầu
-    private float minDistance = 5f; // Giá trị ví dụ, điều chỉnh theo nhu cầu
+    private float bossRange = 15f;
+    private float minDistance = 5f;
 
     public float CurrentHealth { get => _currentHealth; protected set => _currentHealth = value; }
     public float MaxHealth { get => _maxHealth; protected set => _maxHealth = value; }
@@ -54,7 +60,6 @@ public class Enemy : MonoBehaviour
     public float SpeedMultiplier { get => _speedMultiplier; set => _speedMultiplier = value; }
     public float AttackSpeedMultiplier { get => _attackSpeedMultiplier; set => _attackSpeedMultiplier = value; }
     public float DefenseMultiplier { get => _defenseMultiplier; set => _defenseMultiplier = value; }
-    public float DamageReduction { get => _damageReduction; set => _damageReduction = value; }
     public bool Invulnerable { get => _invulnerable; set => _invulnerable = value; }
     public bool IsPlayer { get; set; }
     public bool IsDead { get; set; }
@@ -73,20 +78,33 @@ public class Enemy : MonoBehaviour
 
     protected virtual void Start()
     {
+        Debug.Log("--------------------------------------------------------------------------------------");
         agent = GetComponent<NavMeshAgent>();
         if (agent != null)
         {
-            agent.updateRotation = false; // Tắt cập nhật xoay tự động để điều khiển bằng script
+            agent.updateRotation = false; // Tắt cập nhật xoay tự động
             agent.updateUpAxis = false; // Tắt cập nhật trục Y tự động
         }
-        // Kích hoạt MeleeEnemyAI ngay khi Start để đảm bảo nó hoạt động
+
+        // Đăng ký với EnemyAIManager nếu có
+        if (EnemyAIManager.Instance != null)
+        {
+            var aiController = GetComponent<EnemyAIController>();
+            if (aiController != null)
+            {
+                EnemyAIManager.Instance.AddAgent(aiController);
+            }
+        }
+
         EnsureMeleeEnemyAIActive();
+        Debug.Log($"[{gameObject.name}] Enemy Start. Initial target: {target?.name ?? "None"}");
+
+        // Debug thông tin layer và mask
+        Debug.Log($"[{gameObject.name}] Player Layer Mask: {playerLayerMask.value} (binary: {System.Convert.ToString(playerLayerMask.value, 2)})");
     }
 
     protected virtual void Update()
     {
-        // Debug.Log($"[{gameObject.name}] Current Target: {target?.name ?? "None"}");
-
         // Chỉ cập nhật mục tiêu theo khoảng thời gian để tối ưu hiệu suất
         if (Time.time >= nextTargetUpdateTime)
         {
@@ -94,145 +112,313 @@ public class Enemy : MonoBehaviour
             nextTargetUpdateTime = Time.time + TARGET_UPDATE_INTERVAL;
         }
 
-        // Logic di chuyển được gọi ở class con hoặc xử lý trực tiếp tại đây
         HandleMovement();
     }
 
     /// <summary>
-    /// Cập nhật mục tiêu chính của kẻ địch. Đây là logic tập trung để xác định mục tiêu.
+    /// Tìm tất cả players trong scene với nhiều phương pháp khác nhau
     /// </summary>
-    protected virtual void UpdateTarget()
+    private Transform[] FindAllPlayers()
     {
-        Transform bestCandidateTarget = null;
-        float bestCandidateDistance = float.MaxValue;
-
-        // 1. Ưu tiên target hiện tại nếu nó vẫn trong tầm chaseRange
-        if (target != null && Vector3.Distance(transform.position, target.position) <= chaseRange)
+        // Sử dụng cache để tối ưu hiệu suất
+        if (Time.time - lastPlayerCacheTime < PLAYER_CACHE_DURATION && cachedPlayers != null)
         {
-            bestCandidateTarget = target;
-            bestCandidateDistance = Vector3.Distance(transform.position, target.position);
-            // Debug.Log($"[Enemy-UpdateTarget] Keeping current target: {bestCandidateTarget.name} at distance {bestCandidateDistance:F2}");
+            return cachedPlayers;
         }
 
-        // 2. Tìm tất cả players trong detectionRange
-        tempPlayerList.Clear();
-        var colliders = Physics.OverlapSphere(transform.position, detectionRange, playerLayerMask);
+        tempPlayerObjects.Clear();
 
-        foreach (var col in colliders)
+        // Phương pháp 1: Tìm bằng tag "Player"
+        var playersByTag = GameObject.FindGameObjectsWithTag("Player");
+        foreach (var player in playersByTag)
         {
-            if (col.CompareTag("Player"))
+            if (player != null && !tempPlayerObjects.Contains(player))
             {
-                tempPlayerList.Add(col.transform);
-            }
-        }
-        // Debug.Log($"[Enemy-UpdateTarget] Found {tempPlayerList.Count} players in detection range.");
-
-        // 3. Get closest player from detected list
-        Transform closestPlayer = GetClosestTransform(tempPlayerList); // Helper method để lấy transform gần nhất
-        if (closestPlayer != null)
-        {
-            float distToClosestPlayer = Vector3.Distance(transform.position, closestPlayer.position);
-            // Debug.Log($"[Enemy-UpdateTarget] Closest Player: {closestPlayer.name} at distance {distToClosestPlayer:F2}");
-
-            if (bestCandidateTarget == null || distToClosestPlayer < bestCandidateDistance)
-            {
-                bestCandidateTarget = closestPlayer;
-                bestCandidateDistance = distToClosestPlayer;
-                // Debug.Log($"[Enemy-UpdateTarget] New best target candidate: {bestCandidateTarget.name}");
+                tempPlayerObjects.Add(player);
+                Debug.Log($"[{gameObject.name}] Found player by tag: {player.name}, Layer: {player.layer} ({LayerMask.LayerToName(player.layer)})");
             }
         }
 
-        // 4. Cập nhật target chính của Enemy
-        target = bestCandidateTarget;
-
-        // 5. Nếu target hiện tại đã ra khỏi chaseRange, đặt target về null
-        if (target != null && Vector3.Distance(transform.position, target.position) > chaseRange)
+        // Phương pháp 2: Tìm bằng layer mask (chỉ khi không tìm thấy bằng tag)
+        if (tempPlayerObjects.Count == 0)
         {
-            // Debug.Log($"[Enemy-UpdateTarget] Target {target.name} ({Vector3.Distance(transform.position, target.position):F2}m) out of chase range ({chaseRange}m). Setting target to null.");
-            target = null;
-        }
-
-        // 6. Cập nhật playerTarget cho EnemyAIController và chuyển trạng thái
-        var aiController = GetComponent<EnemyAIController>();
-        if (aiController != null)
-        {
-            aiController.playerTarget = target; // Luôn đồng bộ playerTarget với target chính của Enemy
-
-            if (target != null)
+            for (int layer = 0; layer < 32; layer++)
             {
-                var attackController = GetComponent<EnemyAttackController>();
-                float currentDistance = Vector3.Distance(transform.position, target.position);
-
-                if (attackController != null && currentDistance <= attackController.AttackRange)
+                if ((playerLayerMask & (1 << layer)) != 0)
                 {
-                    // Debug.Log($"[Enemy-UpdateTarget] Target {target.name} ({currentDistance:F2}m) in attack range ({attackController.AttackRange}m). Changing to AttackState.");
-                    aiController.ChangeState(aiController.attackState);
-                }
-                else if (currentDistance <= chaseRange)
-                {
-                    // Debug.Log($"[Enemy-UpdateTarget] Target {target.name} ({currentDistance:F2}m) in chase range ({chaseRange}m). Changing to ChaseState.");
-                    aiController.ChangeState(aiController.chaseState);
-                }
-                else
-                {
-                    // Trường hợp này chỉ xảy ra nếu target không null nhưng đã ra ngoài chaseRange
-                    // và chưa kịp được đặt về null ở bước 5.
-                    // Debug.Log($"[Enemy-UpdateTarget] Target {target.name} ({currentDistance:F2}m) outside chase range ({chaseRange}m). Changing to IdleState (fallback).");
-                    aiController.ChangeState(aiController.idleState);
+                    var objectsInLayer = FindObjectsOfType<GameObject>().Where(obj => obj.layer == layer);
+                    foreach (var obj in objectsInLayer)
+                    {
+                        if (obj != null && obj != gameObject && !tempPlayerObjects.Contains(obj))
+                        {
+                            tempPlayerObjects.Add(obj);
+                            Debug.Log($"[{gameObject.name}] Found player by layer: {obj.name}, Layer: {layer} ({LayerMask.LayerToName(layer)})");
+                        }
+                    }
                 }
             }
-            else
+        }
+
+        // Phương pháp 3: Tìm bằng component specific (ví dụ: PlayerController, CharacterController)
+        if (tempPlayerObjects.Count == 0)
+        {
+            var playerControllers = FindObjectsOfType<MonoBehaviour>()
+                .Where(mb => mb.GetType().Name.ToLower().Contains("player"))
+                .Select(mb => mb.gameObject)
+                .Distinct();
+
+            foreach (var player in playerControllers)
             {
-                // Nếu không có mục tiêu, chuyển trạng thái AI sang nhàn rỗi hoặc tuần tra
-                // Debug.Log($"[Enemy-UpdateTarget] No target found. Changing to IdleState.");
-                aiController.ChangeState(aiController.idleState);
+                if (player != null && !tempPlayerObjects.Contains(player))
+                {
+                    tempPlayerObjects.Add(player);
+                    Debug.Log($"[{gameObject.name}] Found player by component: {player.name}");
+                }
             }
         }
+
+        // Convert to Transform array và cache
+        cachedPlayers = tempPlayerObjects.Where(p => p != null).Select(p => p.transform).ToArray();
+        lastPlayerCacheTime = Time.time;
+
+        Debug.Log($"[{gameObject.name}] Total players found: {cachedPlayers.Length}");
+
+        return cachedPlayers;
     }
 
     /// <summary>
-    /// Phương thức trợ giúp để tìm Transform gần nhất trong một danh sách.
+    /// Cập nhật mục tiêu chính của kẻ địch với logic cải tiến
     /// </summary>
-    protected virtual Transform GetClosestTransform(List<Transform> transforms)
+    protected virtual void UpdateTarget()
     {
-        if (transforms == null || transforms.Count == 0) return null;
+        Debug.Log("--------------------------------------UpdateTarget------------------------------------------------");
 
-        Transform closest = null;
-        float closestDistance = float.MaxValue;
+        Transform currentBestTarget = null;
+        float currentBestDistance = float.MaxValue;
 
-        foreach (var t in transforms)
+        // BƯỚC 1: Ưu tiên target hiện tại nếu nó vẫn hợp lệ và trong tầm chaseRange
+        if (target != null && IsValidTarget(target))
         {
-            if (t == null) continue; // Đảm bảo transform không null
-            float distance = Vector3.Distance(transform.position, t.position);
-            if (distance < closestDistance)
+            float distanceToCurrentTarget = Vector3.Distance(transform.position, target.position);
+            if (distanceToCurrentTarget <= chaseRange)
             {
-                closestDistance = distance;
-                closest = t;
+                currentBestTarget = target;
+                currentBestDistance = distanceToCurrentTarget;
+                Debug.Log($"[{gameObject.name}] Current target {target.name} still valid at {distanceToCurrentTarget:F2}m");
             }
         }
-        return closest;
+
+        // BƯỚC 2: Tìm players bằng multiple methods
+        tempPlayerList.Clear();
+
+        // Method A: Physics.OverlapSphere
+        var colliders = Physics.OverlapSphere(transform.position, detectionRange, playerLayerMask);
+        Debug.Log($"[{gameObject.name}] Physics.OverlapSphere found {colliders.Length} colliders");
+
+        foreach (var col in colliders)
+        {
+            if (col != null && IsValidTarget(col.transform))
+            {
+                tempPlayerList.Add(col.transform);
+                Debug.Log($"[{gameObject.name}] Valid target from OverlapSphere: {col.name}");
+            }
+        }
+
+        // Method B: Fallback - tìm tất cả players trong scene và filter theo distance
+        if (tempPlayerList.Count == 0)
+        {
+            Debug.Log($"[{gameObject.name}] No targets found via OverlapSphere, using fallback method");
+            var allPlayers = FindAllPlayers();
+
+            foreach (var player in allPlayers)
+            {
+                if (player != null && IsValidTarget(player))
+                {
+                    float distance = Vector3.Distance(transform.position, player.position);
+                    if (distance <= detectionRange)
+                    {
+                        tempPlayerList.Add(player);
+                        Debug.Log($"[{gameObject.name}] Valid target from fallback: {player.name} at {distance:F2}m");
+                    }
+                }
+            }
+        }
+
+        Debug.Log($"[{gameObject.name}] Found {tempPlayerList.Count} potential targets in detection range");
+
+        // BƯỚC 3: Đánh giá ứng cử viên player tốt nhất
+        Transform bestPlayerCandidate = EvaluatePlayerTargetCandidates(tempPlayerList);
+        if (bestPlayerCandidate != null)
+        {
+            float distToBestCandidate = Vector3.Distance(transform.position, bestPlayerCandidate.position);
+
+            // So sánh với mục tiêu hiện tại
+            if (currentBestTarget == null || distToBestCandidate < currentBestDistance)
+            {
+                currentBestTarget = bestPlayerCandidate;
+                currentBestDistance = distToBestCandidate;
+                Debug.Log($"[{gameObject.name}] New best target: {currentBestTarget.name} at {currentBestDistance:F2}m");
+            }
+        }
+
+        // BƯỚC 4: Xử lý group target
+        var aiController = GetComponent<EnemyAIController>();
+        if (aiController?.group?.groupTarget != null)
+        {
+            float distToGroupTarget = Vector3.Distance(transform.position, aiController.group.groupTarget.position);
+            if (distToGroupTarget <= detectionRange && IsValidTarget(aiController.group.groupTarget))
+            {
+                if (currentBestTarget == null || distToGroupTarget < currentBestDistance)
+                {
+                    currentBestTarget = aiController.group.groupTarget;
+                    currentBestDistance = distToGroupTarget;
+                    Debug.Log($"[{gameObject.name}] Prioritizing group target: {currentBestTarget.name}");
+                }
+            }
+        }
+
+        // BƯỚC 5: Gán target cuối cùng
+        bool targetChanged = (target != currentBestTarget);
+        target = currentBestTarget;
+
+        if (targetChanged)
+        {
+            Debug.Log($"[{gameObject.name}] Target changed to: {target?.name ?? "None"}");
+        }
+
+        // BƯỚC 6: Kiểm tra chase range
+        if (target != null && Vector3.Distance(transform.position, target.position) > chaseRange)
+        {
+            Debug.Log($"[{gameObject.name}] Target {target.name} out of chase range, setting to null");
+            target = null;
+        }
+
+        // BƯỚC 7: Cập nhật AI Controller
+        UpdateAIController(aiController);
     }
 
-    protected virtual void HandleMovement()
+    /// <summary>
+    /// Kiểm tra xem một transform có phải là target hợp lệ không
+    /// </summary>
+    private bool IsValidTarget(Transform t)
     {
-        if (agent == null)
+        if (t == null || t == transform) return false;
+
+        // Kiểm tra tag
+        if (!t.CompareTag("Player")) return false;
+
+        // Kiểm tra layer (nếu được chỉ định)
+        if (playerLayerMask != 0 && (playerLayerMask & (1 << t.gameObject.layer)) == 0)
         {
-            Debug.LogWarning("NavMeshAgent is not assigned to Enemy: " + gameObject.name, this);
-            return;
+            Debug.Log($"[{gameObject.name}] Target {t.name} has wrong layer {t.gameObject.layer}");
+            return false;
         }
+
+        // Kiểm tra active state
+        if (!t.gameObject.activeInHierarchy) return false;
+
+        // Kiểm tra health (nếu có component Character)
+        var character = t.GetComponent<Character>();
+        if (character != null && character.CurrentHealth <= 0) return false;
+
+        return true;
+    }
+
+    /// <summary>
+    /// Cập nhật AI Controller state
+    /// </summary>
+    private void UpdateAIController(EnemyAIController aiController)
+    {
+        if (aiController == null) return;
+
+        aiController.playerTarget = target;
 
         if (target != null)
         {
-            // Di chuyển đến vị trí của mục tiêu
-            if (agent.isOnNavMesh)
+            var attackController = GetComponent<EnemyAttackController>();
+            float currentDistance = Vector3.Distance(transform.position, target.position);
+
+            if (attackController != null && currentDistance <= attackController.AttackRange)
             {
-                agent.isStopped = false;
-                agent.SetDestination(target.position);
+                Debug.Log($"[{gameObject.name}] Switching to AttackState");
+                aiController.ChangeState(aiController.attackState);
+            }
+            else if (currentDistance <= chaseRange)
+            {
+                Debug.Log($"[{gameObject.name}] Switching to ChaseState");
+                aiController.ChangeState(aiController.chaseState);
             }
         }
         else
         {
-            // Nếu không có mục tiêu, dừng di chuyển
+            Debug.Log($"[{gameObject.name}] No target, switching to IdleState");
+            aiController.ChangeState(aiController.idleState);
+        }
+    }
+
+    /// <summary>
+    /// Đánh giá và chọn target tốt nhất từ danh sách ứng cử viên
+    /// </summary>
+    protected virtual Transform EvaluatePlayerTargetCandidates(List<Transform> candidates)
+    {
+        if (candidates == null || candidates.Count == 0) return null;
+
+        Transform bestCandidate = null;
+        float bestScore = float.MinValue;
+
+        foreach (var candidate in candidates)
+        {
+            if (!IsValidTarget(candidate)) continue;
+
+            float score = CalculateTargetScore(candidate);
+            if (score > bestScore)
+            {
+                bestScore = score;
+                bestCandidate = candidate;
+            }
+        }
+
+        return bestCandidate;
+    }
+
+    /// <summary>
+    /// Tính toán điểm số cho một target (có thể override trong subclass)
+    /// </summary>
+    protected virtual float CalculateTargetScore(Transform candidate)
+    {
+        float distance = Vector3.Distance(transform.position, candidate.position);
+        float distanceScore = Mathf.Max(0, detectionRange - distance); // Gần hơn = điểm cao hơn
+
+        // Có thể thêm các yếu tố khác như health, threat level, v.v.
+        float healthScore = 0f;
+        var character = candidate.GetComponent<Character>();
+        if (character != null)
+        {
+            // Ưu tiên target có ít máu hơn
+            healthScore = (100f - character.CurrentHealth) * 0.1f;
+        }
+
+        return distanceScore + healthScore;
+    }
+
+    protected virtual void HandleMovement()
+    {
+        if (agent == null) return;
+
+        if (target != null)
+        {
+            if (agent.isOnNavMesh && agent.enabled)
+            {
+                agent.isStopped = false;
+                agent.SetDestination(target.position);
+            }
+            else
+            {
+                Debug.LogWarning($"[{gameObject.name}] NavMeshAgent not ready for pathfinding");
+            }
+        }
+        else
+        {
             if (agent.hasPath)
             {
                 agent.ResetPath();
@@ -243,24 +429,39 @@ public class Enemy : MonoBehaviour
 
     protected virtual void OnDrawGizmosSelected()
     {
-        // Vẽ vùng detection (phát hiện mục tiêu ban đầu)
-        Gizmos.color = new Color(0f, 1f, 0f, 0.3f); // Màu xanh lá cây
+        // Vẽ detection range
+        Gizmos.color = new Color(0f, 1f, 0f, 0.3f);
         Gizmos.DrawWireSphere(transform.position, detectionRange);
 
-        // Vẽ vùng chase (truy đuổi)
-        Gizmos.color = new Color(0f, 0f, 1f, 0.3f); // Màu xanh dương
+        // Vẽ chase range
+        Gizmos.color = new Color(0f, 0f, 1f, 0.3f);
         Gizmos.DrawWireSphere(transform.position, chaseRange);
 
-        // Vẽ vùng attack (nếu có EnemyAttackController)
+        // Vẽ attack range
         var attackController = GetComponent<EnemyAttackController>();
         if (attackController != null)
         {
-            Gizmos.color = new Color(1f, 0f, 0f, 0.3f); // Màu đỏ
+            Gizmos.color = new Color(1f, 0f, 0f, 0.3f);
             Gizmos.DrawWireSphere(transform.position, attackController.AttackRange);
+        }
+
+        // Vẽ line đến target
+        if (target != null)
+        {
+            Gizmos.color = Color.red;
+            Gizmos.DrawLine(transform.position, target.position);
+        }
+
+        // Hiển thị thông tin debug
+        if (Application.isPlaying)
+        {
+            UnityEditor.Handles.Label(transform.position + Vector3.up * 2f,
+                $"Target: {target?.name ?? "None"}\nPlayers in scene: {FindAllPlayers().Length}");
         }
     }
 
-    // --- Bổ sung method nhận sát thương và chết cho Enemy ---
+    // === Các phương thức khác giữ nguyên ===
+
     public virtual void TakeDamage(float damage)
     {
         var character = GetComponent<Character>();
@@ -268,50 +469,72 @@ public class Enemy : MonoBehaviour
         {
             character.TakeDamage(damage);
         }
-        OnDamageTaken?.Invoke(this, damage, _currentHealth); // Kích hoạt sự kiện OnDamageTaken
+        OnDamageTaken?.Invoke(this, damage, _currentHealth);
     }
 
     public virtual void Die()
     {
-        // Trigger hiệu ứng chết, animation, v.v.
         var aiController = GetComponent<EnemyAIController>();
         if (aiController != null)
         {
-            // Chuyển trạng thái AI sang DeadState khi kẻ địch chết
-            aiController.ChangeState(aiController.chaseState); // Sử dụng deadState đã được khởi tạo
+            aiController.ChangeState(aiController.deadState);
         }
-        // Có thể mở rộng: phát hiệu ứng, âm thanh, v.v.
-        OnDeath?.Invoke(); // Kích hoạt sự kiện OnDeath
-        Destroy(gameObject); // Hủy GameObject của kẻ địch
+        OnDeath?.Invoke();
+
+        // Unregister from manager
+        if (EnemyAIManager.Instance != null && aiController != null)
+        {
+            EnemyAIManager.Instance.RemoveAgent(aiController);
+        }
+
+        Destroy(gameObject);
     }
 
-    // Các phương thức cài đặt thuộc tính
     public void SetMaxHealthMultiplier(float m) { _maxHealth *= m; }
-    public void SetExperienceMultiplier(float m) { /* TODO: Triển khai logic tăng kinh nghiệm */ }
-    public void SetCurrencyMultiplier(float m) { /* TODO: Triển khai logic tăng tiền tệ */ }
-    public void SetItemDropChanceMultiplier(float m) { /* TODO: Triển khai logic tăng tỷ lệ rơi đồ */ }
+    public void SetExperienceMultiplier(float m) { /* TODO */ }
+    public void SetCurrencyMultiplier(float m) { /* TODO */ }
+    public void SetItemDropChanceMultiplier(float m) { /* TODO */ }
     public void SetNamePrefix(string prefix) { gameObject.name = prefix + gameObject.name; }
-    public void SetSummoned(bool value) { /* TODO: Triển khai logic cho kẻ địch được triệu hồi */ }
+    public void SetSummoned(bool value) { /* TODO */ }
 
     public float BossRange { get => bossRange; set => bossRange = value; }
     public float MinDistance { get => minDistance; set => minDistance = value; }
 
-    // Đảm bảo script MeleeEnemyAI luôn active khi spawn
     protected void EnsureMeleeEnemyAIActive()
     {
         var meleeAi = GetComponent<MeleeEnemyAI>();
         if (meleeAi != null)
         {
-            meleeAi.enabled = true; // Luôn kích hoạt script MeleeEnemyAI
+            meleeAi.enabled = true;
+        }
+    }
+
+    /// <summary>
+    /// Debug method để kiểm tra setup
+    /// </summary>
+    [ContextMenu("Debug Player Detection")]
+    public void DebugPlayerDetection()
+    {
+        Debug.Log($"=== Debug Player Detection for {gameObject.name} ===");
+        Debug.Log($"Detection Range: {detectionRange}");
+        Debug.Log($"Chase Range: {chaseRange}");
+        Debug.Log($"Player Layer Mask: {playerLayerMask.value}");
+
+        var allPlayers = FindAllPlayers();
+        Debug.Log($"Found {allPlayers.Length} players in scene");
+
+        foreach (var player in allPlayers)
+        {
+            float distance = Vector3.Distance(transform.position, player.position);
+            Debug.Log($"Player: {player.name}, Distance: {distance:F2}, Valid: {IsValidTarget(player)}");
         }
     }
 }
 
-// Interface ví dụ cho các đối tượng có thể nhận sát thương
+// Interface và classes khác giữ nguyên
 public interface IDamageable
 {
     void TakeDamage(float damage);
 }
 
-// Các lớp ví dụ khác (có thể không có trong các file bạn cung cấp, nhưng được giữ lại để tránh lỗi tham chiếu)
 public class PlayerThreatManager { }
