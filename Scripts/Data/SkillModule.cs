@@ -90,14 +90,22 @@ public class SkillModule : ScriptableObject
 
     public bool CanPlayerUse(int playerLevel) => playerLevel >= requiredLevel;
 
+    /// <summary>
+    /// Override CanExecute for enemies - they don't need mana
+    /// </summary>
     public bool CanExecute(Character user)
     {
         if (user == null) return false;
         
-        // Check mana
+        // Check if this is an enemy - they don't need mana or level requirements
+        if (user.gameObject.CompareTag("Enemy"))
+        {
+            return true; // Enemies can always execute skills (cooldown handled elsewhere)
+        }
+        
+        // Original player logic
         if (user.mana != null && user.mana.currentValue < manaCost) return false;
         
-        // Check level requirement
         var skillManager = user.GetComponent<ModularSkillManager>();
         if (skillManager != null && skillManager.GetPlayerLevel() < requiredLevel) return false;
         
@@ -131,14 +139,14 @@ public class SkillModule : ScriptableObject
         return info;
     }
 
-    private void OnValidate()
+    protected virtual void OnValidate()
     {
         ValidateValues();
         if (string.IsNullOrEmpty(description)) GenerateDefaultDescription();
         UpdateDamageAreaColorByType();
     }
 
-    private void ValidateValues()
+    protected void ValidateValues()
     {
         damage = Mathf.Max(0f, damage);
         range = Mathf.Max(0.1f, range);
@@ -149,7 +157,7 @@ public class SkillModule : ScriptableObject
         healAmount = Mathf.Max(0f, healAmount);
     }
 
-    private void GenerateDefaultDescription()
+    protected void GenerateDefaultDescription()
     {
         description = skillType switch
         {
@@ -166,7 +174,7 @@ public class SkillModule : ScriptableObject
         };
     }
     
-    private void UpdateDamageAreaColorByType()
+    protected void UpdateDamageAreaColorByType()
     {
         if (!damageAreaColor.Equals(new Color(1f, 0f, 0f, 0.3f))) return;
         

@@ -7,7 +7,7 @@ using System.Collections;
 /// Description: Enhanced skill execution system with proper player damage prevention
 /// </summary>
 
-// Base class cho t?t c? skill executors
+// Base class cho tất cả skill executors
 public abstract class SkillExecutorBase : ISkillExecutor
 {
     public SkillModule Module { get; protected set; }
@@ -43,23 +43,37 @@ public abstract class SkillExecutorBase : ISkillExecutor
         var animator = user.GetComponent<Animator>();
         if (animator != null)
         {
-            // S? d?ng animationTrigger t? Module thay v� hard-coded
+            // Sử dụng animationTrigger từ Module thay vì hard-coded
             string trigger = !string.IsNullOrEmpty(Module.animationTrigger) ? 
                             Module.animationTrigger : "Attack";
             animator.SetTrigger(trigger);
         }
         
-        // Also trigger PlayerController animation if available
-        var playerController = user.GetComponent<MonoBehaviour>();
-        if (playerController != null && playerController.GetType().Name == "PlayerController")
+        // Also trigger PlayerController animation if available (for players only)
+        if (user.gameObject.CompareTag("Player"))
         {
-            // Use reflection to call TriggerSkillAnimation method with animationTrigger
-            var method = playerController.GetType().GetMethod("TriggerSkillAnimation");
-            if (method != null)
+            var playerController = user.GetComponent<MonoBehaviour>();
+            if (playerController != null && playerController.GetType().Name == "PlayerController")
             {
-                string trigger = !string.IsNullOrEmpty(Module.animationTrigger) ? 
-                                Module.animationTrigger : "Attack";
-                method.Invoke(playerController, new object[] { Module.skillName, trigger });
+                // Use reflection to call TriggerSkillAnimation method with animationTrigger
+                var method = playerController.GetType().GetMethod("TriggerSkillAnimation");
+                if (method != null)
+                {
+                    string trigger = !string.IsNullOrEmpty(Module.animationTrigger) ? 
+                                    Module.animationTrigger : "Attack";
+                    method.Invoke(playerController, new object[] { Module.skillName, trigger });
+                }
+            }
+        }
+        
+        // For enemies, trigger EnemyAnimatorController if available
+        if (user.gameObject.CompareTag("Enemy"))
+        {
+            var enemyAnimator = user.GetComponent<EnemyAnimatorController>();
+            if (enemyAnimator != null)
+            {
+                // Trigger attack animation for enemy
+                enemyAnimator.PlayAttackAnimation();
             }
         }
     }
@@ -89,13 +103,13 @@ public abstract class SkillExecutorBase : ISkillExecutor
     }
     
     /// <summary>
-    /// Enhanced visual effect creation v?i auto-destroy v� collision positioning
+    /// Enhanced visual effect creation với auto-destroy và collision positioning
     /// </summary>
     protected void CreateVisualEffect(Vector3 position)
     {
         if (Module.effectPrefab != null)
         {
-            // S? d?ng Enhanced Effect Manager ?? t?o effect v?i auto-destroy
+            // Sử dụng Enhanced Effect Manager để tạo effect với auto-destroy
             EnhancedEffectManager.CreateEffectAtPosition(
                 Module.effectPrefab, 
                 position, 
@@ -107,13 +121,13 @@ public abstract class SkillExecutorBase : ISkillExecutor
     }
     
     /// <summary>
-    /// T?o effect va ch?m t?i v? tr� ch�nh x�c v?i direction
+    /// Tạo effect va chạm tại vị trí chính xác với direction
     /// </summary>
     protected void CreateImpactEffect(Vector3 impactPosition, Vector3 impactDirection, GameObject target = null)
     {
         if (Module.effectPrefab != null)
         {
-            // T?o effect t?i v? tr� va ch?m ch�nh x�c
+            // Tạo effect tại vị trí va chạm chính xác
             EnhancedEffectManager.CreateImpactEffect(
                 Module.effectPrefab,
                 impactPosition,
@@ -125,7 +139,7 @@ public abstract class SkillExecutorBase : ISkillExecutor
     }
     
     /// <summary>
-    /// T?o effect theo d�i target (cho projectile)
+    /// Tạo effect theo dõi target (cho projectile)
     /// </summary>
     protected void CreateFollowEffect(Transform target, Vector3 offset = default)
     {
@@ -154,8 +168,19 @@ public abstract class SkillExecutorBase : ISkillExecutor
         {
             if (character == null) continue;
             
-            // CRITICAL FIX: Multiple layers of player detection
-            if (IsPlayerCharacter(character, caster)) continue;
+            // CRITICAL FIX: Use same logic as FindSkillTargetsInRange
+            if (character == caster) continue; // Don't hit self
+            
+            // If caster is player, only target enemies
+            if (caster != null && caster.gameObject.CompareTag("Player"))
+            {
+                if (!character.gameObject.CompareTag("Enemy")) continue;
+            }
+            // If caster is enemy, only target players
+            else if (caster != null && caster.gameObject.CompareTag("Enemy"))
+            {
+                if (!character.gameObject.CompareTag("Player")) continue;
+            }
             
             // Calculate distance
             float distance = Vector2.Distance(center, character.transform.position);
@@ -178,7 +203,7 @@ public abstract class SkillExecutorBase : ISkillExecutor
     /// </summary>
     protected bool IsPlayerCharacter(Character character, Character caster = null)
     {
-        // Method 1: Same as caster
+        // Method 1: Same as caster - CRITICAL: Enemy should not hit itself
         if (caster != null && character == caster) return true;
         
         // Method 2: Has PlayerController component
@@ -191,13 +216,18 @@ public abstract class SkillExecutorBase : ISkillExecutor
         if (attackable != null && !attackable.CanBeAttacked())
             return true;
         
-        // Method 4: Check GameObject name patterns
+        // Method 4: Check GameObject name patterns for player detection (but exclude if it's clearly an enemy)
         string objName = character.gameObject.name.ToLower();
-        if (objName.Contains("player") || objName.Contains("hero") || objName.Contains("character"))
+        if (objName.Contains("player") || objName.Contains("hero"))
+            return true;
+        // Don't use "character" in name check as it's too broad
+            
+        // Method 5: Check tag for player
+        if (character.gameObject.CompareTag("Player"))
             return true;
             
-        // Method 5: Check tag
-        if (character.gameObject.CompareTag("Player"))
+        // Player layer check (Layer 6 = Player, not 7)
+        if (character.gameObject.layer == 6)
             return true;
         
         return false;
@@ -246,13 +276,13 @@ public abstract class SkillExecutorBase : ISkillExecutor
     }
     
     /// <summary>
-    /// Enhanced damage area visualization v?i auto-generation v� custom prefab support
+    /// Enhanced damage area visualization với auto-generation và custom prefab support
     /// </summary>
     private GameObject currentMeleeIndicator;
 
     protected void ShowDamageAreaAtExactPosition(Vector2 exactPosition, float radius, string indicatorName = "DamageAreaIndicator")
     {
-        // H?y hi?u ?ng c? n?u c�n t?n t?i
+        // Hủy hiệu ứng cũ nếu còn tồn tại
         if (currentMeleeIndicator != null)
         {
             Object.Destroy(currentMeleeIndicator);
@@ -260,16 +290,16 @@ public abstract class SkillExecutorBase : ISkillExecutor
         }
         GameObject indicator = null;
         
-        // ?u ti�n s? d?ng custom prefab t? SkillModule
+        // Đầu tiên sử dụng custom prefab từ SkillModule
         if (Module.damageZonePrefab != null)
         {
             indicator = Object.Instantiate(Module.damageZonePrefab);
             indicator.name = $"{indicatorName}_Custom_{Time.time:F2}";
             
-            // Set position v� scale cho custom prefab
+            // Set position và scale cho custom prefab
             indicator.transform.position = new Vector3(exactPosition.x, exactPosition.y, -0.1f); // Slightly in front for visibility
             
-            // C? g?ng scale custom prefab theo radius
+            // Cố gắng scale custom prefab theo radius
             if (radius > 0)
             {
                 indicator.transform.localScale = Vector3.one * radius * 2;
@@ -286,7 +316,7 @@ public abstract class SkillExecutorBase : ISkillExecutor
         
         currentMeleeIndicator = indicator;
         
-        // Lifetime ng?n h?n: ch? t?n t?i 0.2s
+        // Lifetime ngắn hạn: chỉ tồn tại 0.2s
         if (indicator != null)
         {
             // Add fade-out effect before destruction
@@ -503,17 +533,17 @@ public abstract class SkillExecutorBase : ISkillExecutor
         foreach (var character in allCharacters)
         {
             if (character == null || character == caster) continue;
-            // N?u caster l� player th� ch? t?n c�ng enemy
+            // Nếu caster là player thì chỉ tấn công enemy
             if (caster.gameObject.CompareTag("Player"))
             {
                 if (!character.gameObject.CompareTag("Enemy")) continue;
             }
-            // N?u caster l� enemy th� ch? t?n c�ng player
+            // Nếu caster là enemy thì chỉ tấn công player
             else if (caster.gameObject.CompareTag("Enemy"))
             {
                 if (!character.gameObject.CompareTag("Player")) continue;
             }
-            // Ki?m tra m�u
+            // Kiểm tra máu
             if (character.health != null && character.health.currentValue > 0)
             {
                 float distance = Vector2.Distance(center, character.transform.position);
@@ -525,9 +555,61 @@ public abstract class SkillExecutorBase : ISkillExecutor
         }
         return targets.ToArray();
     }
+
+    /// <summary>
+    /// Test method để kiểm tra logic enemy self-damage prevention
+    /// </summary>
+    [ContextMenu("Test Enemy Self-Damage Prevention")]
+    public void TestEnemySelfDamagePrevention()
+    {
+        Debug.Log("=== TESTING ENEMY SELF-DAMAGE PREVENTION ===");
+        
+        var allCharacters = Object.FindObjectsByType<Character>(FindObjectsSortMode.None);
+        var enemies = new System.Collections.Generic.List<Character>();
+        var players = new System.Collections.Generic.List<Character>();
+        
+        foreach (var character in allCharacters)
+        {
+            if (character == null) continue;
+            
+            if (IsPlayerCharacter(character, null))
+            {
+                players.Add(character);
+                Debug.Log($"Player found: {character.name} (Tag: {character.gameObject.tag}, Layer: {character.gameObject.layer})");
+            }
+            else
+            {
+                enemies.Add(character);
+                Debug.Log($"Enemy found: {character.name} (Tag: {character.gameObject.tag}, Layer: {character.gameObject.layer})");
+            }
+        }
+        
+        Debug.Log($"Total characters: {allCharacters.Length}");
+        Debug.Log($"Players: {players.Count}");
+        Debug.Log($"Enemies: {enemies.Count}");
+        
+        // Test enemy projectile logic
+        if (enemies.Count > 0)
+        {
+            var testEnemy = enemies[0];
+            Debug.Log($"Testing with enemy: {testEnemy.name}");
+            
+            // Simulate projectile collision detection
+            var testCharacters = Object.FindObjectsByType<Character>(FindObjectsSortMode.None);
+            foreach (var character in testCharacters)
+            {
+                if (character == null) continue;
+                
+                bool wouldHit = !IsPlayerCharacter(character, testEnemy);
+                Debug.Log($"Enemy {testEnemy.name} would hit {character.name}: {wouldHit} (Tag: {character.gameObject.tag}, Layer: {character.gameObject.layer})");
+            }
+        }
+        
+        Debug.Log("=== TEST COMPLETE ===");
+    }
 }
 
-// 1. MELEE SKILL EXECUTOR - C?n chi?n v?i collider t? ??ng
+// 1. MELEE SKILL EXECUTOR - Cận chiến với collider tự động
 public class MeleeSkillExecutor : SkillExecutorBase
 {
     public MeleeSkillExecutor(SkillModule module) : base(module) { }
@@ -565,8 +647,6 @@ public class MeleeSkillExecutor : SkillExecutorBase
         // Enhanced feedback for no targets found
         if (enemies.Length == 0)
         {
-            Debug.Log($"?? Melee skill '{Module.skillName}' found no valid targets in range {Module.range}");
-            
             // Still show damage area for visual feedback
             if (Module.showDamageArea)
             {
@@ -578,8 +658,6 @@ public class MeleeSkillExecutor : SkillExecutorBase
             CreateVisualEffect(user.transform.position); // Enhanced effect creation
             yield break;
         }
-        
-        Debug.Log($"?? Melee skill '{Module.skillName}' hitting {enemies.Length} enemies");
         
         foreach (var enemy in enemies)
         {
@@ -609,7 +687,7 @@ public class MeleeSkillExecutor : SkillExecutorBase
                 enemy.ApplyStun(Module.stunDuration);
             }
             
-            // Create individual impact effects for each enemy v?i v? tr� ch�nh x�c
+            // Create individual impact effects for each enemy với vị trí chính xác
             Vector3 impactDirection = (enemy.transform.position - user.transform.position).normalized;
             CreateImpactEffect(enemy.transform.position, impactDirection, enemy.gameObject);
             CreateIndividualHitEffect(enemy.transform.position, isCritical);
@@ -618,7 +696,7 @@ public class MeleeSkillExecutor : SkillExecutorBase
         // Play impact sound
         PlayImpactSound(user);
         
-        // Create main visual effect t?i v? tr� user
+        // Create main visual effect tại vị trí user
         CreateVisualEffect(user.transform.position);
         
         // Show enhanced damage area ALWAYS at user position for melee
@@ -647,8 +725,8 @@ public class MeleeSkillExecutor : SkillExecutorBase
 
     public override void ShowDamageArea(Vector2 position)
     {
-        // Kh�ng t?o damage area trong ShowDamageArea ?? tr�nh tr�ng l?p
-        // Damage area s? ???c t?o trong Execute() t?i v? tr� player
+        // Không tạo damage area trong ShowDamageArea để tránh trùng lặp
+        // Damage area sẽ được tạo trong Execute() tại vị trí player
     }
 
     public override void UpdateDamageArea(Vector2 position)
@@ -662,7 +740,7 @@ public class MeleeSkillExecutor : SkillExecutorBase
     }
 }
 
-// 2. PROJECTILE SKILL EXECUTOR - Ph�ng chi�u v?i range indicator
+// 2. PROJECTILE SKILL EXECUTOR - Phóng chiêu với range indicator
 public class ProjectileSkillExecutor : SkillExecutorBase
 {
     public ProjectileSkillExecutor(SkillModule module) : base(module) { }
@@ -671,9 +749,51 @@ public class ProjectileSkillExecutor : SkillExecutorBase
     {
         if (!Module.CanExecute(user)) return;
 
-        // Use RAW mouse position for projectiles
-        Vector2 rawMousePos = GetRawMouseWorldPosition();
-        Vector2 validTarget = GetValidTargetPosition(rawMousePos, user);
+        Vector2 validTarget;
+        if (user.gameObject.CompareTag("Player"))
+        {
+            // Player dùng vị trí chuột
+            Vector2 rawMousePos = GetRawMouseWorldPosition();
+            validTarget = GetValidTargetPosition(rawMousePos, user);
+        }
+        else if (user.gameObject.CompareTag("Enemy"))
+        {
+            // Enemy ưu tiên bắn về phía playerTarget, nếu không có thì tìm player gần nhất
+            Transform playerTarget = user.GetType().GetProperty("playerTarget")?.GetValue(user, null) as Transform;
+            if (playerTarget == null)
+            {
+                // Tìm player gần nhất trong scene
+                var allCharacters = Object.FindObjectsByType<Character>(FindObjectsSortMode.None);
+                float minDist = float.MaxValue;
+                Transform closestPlayer = null;
+                foreach (var c in allCharacters)
+                {
+                    if (c != null && c.gameObject.CompareTag("Player"))
+                    {
+                        float dist = Vector2.Distance(user.transform.position, c.transform.position);
+                        if (dist < minDist)
+                        {
+                            minDist = dist;
+                            closestPlayer = c.transform;
+                        }
+                    }
+                }
+                playerTarget = closestPlayer;
+            }
+            if (playerTarget != null)
+            {
+                validTarget = GetValidTargetPosition((Vector2)playerTarget.position, user);
+            }
+            else
+            {
+                // Không có player nào, không thực hiện kỹ năng
+                return;
+            }
+        }
+        else
+        {
+            validTarget = user.transform.position;
+        }
 
         // Use mana
         if (user.mana != null)
@@ -729,22 +849,22 @@ public class ProjectileSkillExecutor : SkillExecutorBase
 
     public override void ShowDamageArea(Vector2 position)
     {
-        // Projectile kh�ng hi?n th? damage area t?i v? tr� b?t ??u
-        // Thay v�o ?� c� th? hi?n th? trajectory ho?c kh�ng hi?n th? g�
+        // Projectile không hiện thị damage area tại vị trí bắt đầu
+        // Thay vào đó có thể hiện thị trajectory hoặc không hiện thị gì
     }
 
     public override void UpdateDamageArea(Vector2 position)
     {
-        // Projectile c� th? c?p nh?t trajectory preview
+        // Projectile có thể cập nhật trajectory preview
     }
 
     public override void HideDamageArea()
     {
-        // ?n trajectory preview n?u c�
+        // Ẩn trajectory preview nếu có
     }
 }
 
-// 3. AREA SKILL EXECUTOR - AoE v?i v�ng s�t th??ng ch�nh x�c
+// 3. AREA SKILL EXECUTOR - AoE với vòng sát thương chính xác
 public class AreaSkillExecutor : SkillExecutorBase
 {
     public AreaSkillExecutor(SkillModule module) : base(module) { }
@@ -753,9 +873,26 @@ public class AreaSkillExecutor : SkillExecutorBase
     {
         if (!Module.CanExecute(user)) return;
 
-        // Force use RAW mouse position
-        Vector2 rawMousePos = GetRawMouseWorldPosition();
-        Vector2 validTarget = GetValidTargetPosition(rawMousePos, user);
+        Vector2 validTarget;
+        if (user.gameObject.CompareTag("Player"))
+        {
+            // Player dùng vị trí chuột
+            Vector2 rawMousePos = GetRawMouseWorldPosition();
+            validTarget = GetValidTargetPosition(rawMousePos, user);
+        }
+        else if (user.gameObject.CompareTag("Enemy"))
+        {
+            // Enemy dùng vị trí player hoặc mục tiêu
+            var playerTarget = user.GetType().GetProperty("playerTarget")?.GetValue(user, null) as Transform;
+            if (playerTarget != null)
+                validTarget = GetValidTargetPosition((Vector2)playerTarget.position, user);
+            else
+                validTarget = user.transform.position; // fallback
+        }
+        else
+        {
+            validTarget = user.transform.position;
+        }
 
         // Use mana
         if (user.mana != null)
@@ -808,7 +945,7 @@ public class AreaSkillExecutor : SkillExecutorBase
                 enemy.ApplyStun(Module.stunDuration);
             }
             
-            // Create individual impact effects t?i v? tr� t?ng enemy
+            // Create individual impact effects tại vị trí từng enemy
             Vector3 impactDirection = (enemy.transform.position - (Vector3)targetPosition).normalized;
             if (impactDirection.magnitude < 0.1f) impactDirection = Vector3.up; // Fallback direction
             
@@ -831,22 +968,22 @@ public class AreaSkillExecutor : SkillExecutorBase
 
     public override void ShowDamageArea(Vector2 position)
     {
-        // Kh�ng t?o damage area t?i v? tr� chu?t cho Area skill
-        // Ch? hi?n th? khi skill ???c execute
+        // Không tạo damage area tại vị trí chuột cho Area skill
+        // Chỉ hiện thị khi skill được execute
     }
 
     public override void UpdateDamageArea(Vector2 position)
     {
-        // C?p nh?t v? tr� v�ng s�t th??ng theo mouse nh?ng trong ph?m vi h?p l?
+        // Cập nhật vị trí vòng sát thương theo mouse nhưng trong phạm vi hợp lệ
     }
 
     public override void HideDamageArea()
     {
-        // ?n v�ng s�t th??ng area
+        // Ẩn vòng sát thương area
     }
 }
 
-// 4. SUPPORT SKILL EXECUTOR - H? tr? kh�ng c?n v? v�ng
+// 4. SUPPORT SKILL EXECUTOR - Hỗ trợ không cần vẽ vòng
 public class SupportSkillExecutor : SkillExecutorBase
 {
     public SupportSkillExecutor(SkillModule module) : base(module) { }
@@ -883,7 +1020,7 @@ public class SupportSkillExecutor : SkillExecutorBase
         // Apply buff effects (you can extend this)
         // TODO: Add buff system integration here
         
-        // Create enhanced visual effect t?i v? tr� user
+        // Create enhanced visual effect tại vị trí user
         CreateVisualEffect(user.transform.position);
         
         // Play impact sound
@@ -897,14 +1034,14 @@ public class SupportSkillExecutor : SkillExecutorBase
     }
     
     /// <summary>
-    /// T?o enhanced visual effect ??c bi?t cho Support skills
+    /// Tạo enhanced visual effect đặc biệt cho Support skills
     /// </summary>
     private void CreateEnhancedSupportVisualEffect(Vector2 position)
     {
         GameObject supportEffect = new GameObject($"SupportEffect_{Module.skillName}_{Time.time:F2}");
         supportEffect.transform.position = new Vector3(position.x, position.y, 0);
         
-        // T?o enhanced particle system cho support effect
+        // Tạo enhanced particle system cho support effect
         var particleSystem = supportEffect.AddComponent<ParticleSystem>();
         var main = particleSystem.main;
         main.startColor = Module.skillColor;
@@ -940,7 +1077,7 @@ public class SupportSkillExecutor : SkillExecutorBase
         );
         colorOverLifetime.color = gradient;
         
-        // Auto destroy v?i enhanced system
+        // Auto destroy với enhanced system
         var autoDestroy = supportEffect.AddComponent<EffectAutoDestroy>();
         autoDestroy.Initialize(Module.damageAreaDisplayTime, true);
     }
@@ -1000,7 +1137,7 @@ public class InstantSkillExecutor : SkillExecutorBase
             Debug.Log($"?? Damage buff applied: {Module.damage} to {user.name}!");
         }
         
-        // Create enhanced visual effect t?i v? tr� user
+        // Create enhanced visual effect tại vị trí user
         CreateVisualEffect(user.transform.position);
         
         // Play impact sound
@@ -1014,14 +1151,14 @@ public class InstantSkillExecutor : SkillExecutorBase
     }
     
     /// <summary>
-    /// T?o enhanced visual effect ??c bi?t cho Instant skills
+    /// Tạo enhanced visual effect đặc biệt cho Instant skills
     /// </summary>
     private void CreateEnhancedInstantVisualEffect(Vector2 position)
     {
         GameObject instantEffect = new GameObject($"InstantEffect_{Module.skillName}_{Time.time:F2}");
         instantEffect.transform.position = new Vector3(position.x, position.y, 0);
         
-        // T?o enhanced particle system cho instant effect
+        // Tạo enhanced particle system cho instant effect
         var particleSystem = instantEffect.AddComponent<ParticleSystem>();
         var main = particleSystem.main;
         main.startColor = Module.skillColor;
@@ -1058,7 +1195,7 @@ public class InstantSkillExecutor : SkillExecutorBase
         sizeCurve.AddKey(1f, 0f);
         sizeOverLifetime.size = new ParticleSystem.MinMaxCurve(1f, sizeCurve);
         
-        // Auto destroy v?i enhanced system
+        // Auto destroy với enhanced system
         var autoDestroy = instantEffect.AddComponent<EffectAutoDestroy>();
         autoDestroy.Initialize(2.5f, true);
     }
@@ -1147,8 +1284,19 @@ public class EnhancedProjectileBehavior : MonoBehaviour
         
         foreach (var character in allCharacters)
         {
-            // CRITICAL FIX: Use bulletproof player detection
-            if (IsPlayerCharacter(character)) continue;
+            // CRITICAL FIX: Use same logic as FindSkillTargetsInRange
+            if (character == caster) continue; // Don't hit self
+            
+            // If caster is player, only target enemies
+            if (caster != null && caster.gameObject.CompareTag("Player"))
+            {
+                if (!character.gameObject.CompareTag("Enemy")) continue;
+            }
+            // If caster is enemy, only target players
+            else if (caster != null && caster.gameObject.CompareTag("Enemy"))
+            {
+                if (!character.gameObject.CompareTag("Player")) continue;
+            }
             
             // Skip if dead
             if (character.health == null || character.health.currentValue <= 0) continue;
@@ -1168,10 +1316,10 @@ public class EnhancedProjectileBehavior : MonoBehaviour
     /// </summary>
     private bool IsPlayerCharacter(Character character)
     {
-        // Same as caster
+        // Same as caster - CRITICAL: Enemy should not hit itself
         if (character == caster) return true;
         
-        // Has PlayerController
+        // Has PlayerController component
         var playerController = character.GetComponent<MonoBehaviour>();
         if (playerController != null && playerController.GetType().Name == "PlayerController")
             return true;
@@ -1181,13 +1329,18 @@ public class EnhancedProjectileBehavior : MonoBehaviour
         if (attackable != null && !attackable.CanBeAttacked())
             return true;
         
-        // Name patterns
+        // Name patterns for player detection (but exclude if it's clearly an enemy)
         string objName = character.gameObject.name.ToLower();
-        if (objName.Contains("player") || objName.Contains("hero") || objName.Contains("character"))
+        if (objName.Contains("player") || objName.Contains("hero"))
             return true;
+        // Don't use "character" in name check as it's too broad
             
-        // Tag check
+        // Tag check for player
         if (character.gameObject.CompareTag("Player"))
+            return true;
+        
+        // Player layer check (Layer 6 = Player, not 7)
+        if (character.gameObject.layer == 6)
             return true;
         
         return false;
@@ -1205,7 +1358,7 @@ public class EnhancedProjectileBehavior : MonoBehaviour
         
         enemy.TakeDamage(finalDamage, isCritical);
         
-        // Apply knockback v?i direction c?a projectile
+        // Apply knockback với direction của projectile
         if (skillModule.knockbackForce > 0)
         {
             enemy.ApplyKnockback(skillModule.knockbackForce, direction);
@@ -1221,13 +1374,13 @@ public class EnhancedProjectileBehavior : MonoBehaviour
             }
         }
         
-        // Create enhanced impact effect t?i v? tr� va ch?m ch�nh x�c
+        // Create enhanced impact effect tại vị trí va chạm chính xác
         Vector3 impactPosition = transform.position;
         Vector3 impactDirection = direction;
         
         if (skillModule.effectPrefab != null)
         {
-            // S? d?ng Enhanced Effect Manager cho impact effect
+            // Sử dụng Enhanced Effect Manager cho impact effect
             EnhancedEffectManager.CreateImpactEffect(
                 skillModule.effectPrefab,
                 impactPosition,
@@ -1240,13 +1393,11 @@ public class EnhancedProjectileBehavior : MonoBehaviour
         // Create individual hit effect with critical differentiation
         CreateProjectileHitEffect(impactPosition, isCritical);
         
-        Debug.Log($"?? Projectile '{skillModule.skillName}' hit {enemy.name} at {impactPosition} for {finalDamage} damage");
-        
         Destroy(gameObject);
     }
     
     /// <summary>
-    /// T?o hit effect ??c bi?t cho projectile
+    /// Tạo hit effect đặc biệt cho projectile
     /// </summary>
     private void CreateProjectileHitEffect(Vector3 position, bool isCritical)
     {

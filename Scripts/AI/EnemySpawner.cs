@@ -3,7 +3,7 @@ using System.Collections;
 using System.Collections.Generic;
 
 /// <summary>
-/// Spawn kẻ địch từ prefab tại các điểm spawn, giới hạn số lượng và tự động gán playerTarget.
+/// Enemy Spawner - updated for new unified system
 /// </summary>
 public class EnemySpawner : MonoBehaviour
 {
@@ -20,25 +20,9 @@ public class EnemySpawner : MonoBehaviour
     public Transform[] spawnPoints;
 
     private List<GameObject> spawnedEnemies = new List<GameObject>();
-    private Transform playerTransform;
 
     void Start()
     {
-        // Tìm player trong scene (giả sử có PlayerController hoặc tag "Player")
-        // Ưu tiên tìm theo tag "Player" để linh hoạt hơn
-        var playerByTag = GameObject.FindGameObjectWithTag("Player");
-        if (playerByTag != null)
-            playerTransform = playerByTag.transform;
-        else
-        {
-            var playerObj = GameObject.FindObjectOfType<PlayerController>(); // Fallback nếu có PlayerController
-            if (playerObj != null)
-                playerTransform = playerObj.transform;
-            else
-            {
-                Debug.LogWarning("EnemySpawner: Could not find Player. Ensure Player has 'Player' tag or PlayerController component.");
-            }
-        }
         StartCoroutine(SpawnEnemiesRoutine());
     }
 
@@ -47,13 +31,14 @@ public class EnemySpawner : MonoBehaviour
         while (true)
         {
             yield return new WaitForSeconds(spawnInterval);
-            // Xóa các enemy đã bị destroy khỏi danh sách
+
+            // Clean up destroyed enemies
             spawnedEnemies.RemoveAll(e => e == null);
+
             if (spawnedEnemies.Count < maxEnemies)
             {
                 if (spawnPoints == null || spawnPoints.Length == 0)
                 {
-                    Debug.LogWarning("EnemySpawner: No spawn points assigned. Cannot spawn enemies.");
                     continue;
                 }
 
@@ -61,20 +46,26 @@ public class EnemySpawner : MonoBehaviour
                 GameObject enemy = Instantiate(enemyPrefab, spawnPoint.position, spawnPoint.rotation);
                 spawnedEnemies.Add(enemy);
 
-                // Gán playerTransform cho các script liên quan nếu có
-                // Enemy.cs sẽ tự động cập nhật EnemyAIController.playerTarget
-                var enemyComponent = enemy.GetComponent<Enemy>();
-                if (enemyComponent != null)
-                {
-                    // Enemy component sẽ tự tìm player và quản lý target
-                    // Không cần gán playerTransform trực tiếp ở đây nữa cho EnemyAIController, Movement, Attack
-                    // vì Enemy.UpdateTarget() sẽ làm điều đó.
-                }
-                else
-                {
-                    Debug.LogWarning($"Spawned enemy '{enemy.name}' does not have an Enemy component. AI/Movement/Attack may not function correctly.", enemy);
-                }
+                // The new system auto-handles everything via CoreEnemy
+                // Just ensure the enemy has the required components
+                EnsureEnemyComponents(enemy);
             }
         }
+    }
+
+    private void EnsureEnemyComponents(GameObject enemy)
+    {
+        // Ensure essential components exist
+        if (enemy.GetComponent<Character>() == null)
+            enemy.AddComponent<Character>();
+
+        if (enemy.GetComponent<CoreEnemy>() == null)
+            enemy.AddComponent<CoreEnemy>();
+
+        if (enemy.GetComponent<EnemyType>() == null)
+            enemy.AddComponent<EnemyType>();
+
+        if (enemy.GetComponent<EnemySkillManager>() == null)
+            enemy.AddComponent<EnemySkillManager>();
     }
 }

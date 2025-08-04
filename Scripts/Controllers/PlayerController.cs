@@ -35,6 +35,12 @@ public class PlayerController : MonoBehaviour
             animator.SetBool("IsMoving", false);
             // Không set bất kỳ trigger nào ở đây
         }
+        
+        // Đảm bảo có PlayerSpecialMovementController
+        if (GetComponent<PlayerSpecialMovementController>() == null)
+        {
+            gameObject.AddComponent<PlayerSpecialMovementController>();
+        }
     }
 
     void Update()
